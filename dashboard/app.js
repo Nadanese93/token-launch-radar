@@ -27,14 +27,21 @@
     return Math.max(0, Math.round(days)) + 'd';
   }
   // The model in one function: the page recomputes a row and checks the number board.json
-  // carries. radar-3: the fitted multiple (row.base_multiple, unrounded so the recompute is
-  // exact), flat maturity (1.0), and the adopted category factor from DATA.category_factors.
+  // carries. radar-4: the fitted multiple (row.base_multiple, unrounded so the recompute is
+  // exact), and only the terms the blind test kept (DATA.terms): growth, chain and the
+  // category factor are 1.0 when dropped; maturity is flat (1.0) unless the test kept the
+  // old age bonus instead.
   function impliedOf(row, model) {
+    var terms = DATA.terms || {};
     var growth = Math.min(model.growth_cap, Math.max(model.growth_floor, row.change_7d === null || row.change_7d === undefined ? 0 : row.change_7d));
-    var growthMult = 1 + (growth / 100) * model.growth_weight;
+    var growthMult = terms.growth === false ? 1 : 1 + (growth / 100) * model.growth_weight;
     var maturity = 1.0;
+    if (terms.maturity_flat === false) {
+      var age = row.age_days === null || row.age_days === undefined ? model.unknown_age_days : row.age_days;
+      maturity = model.maturity_floor + (Math.min(Math.max(age, 0), model.maturity_days) / model.maturity_days) * model.maturity_range;
+    }
     var chains = row.chains && row.chains.length ? row.chains.length : 1;
-    var chainMult = 1 + model.chain_step * Math.min(Math.max(chains - 1, 0), model.chain_max_extra);
+    var chainMult = terms.chain === false ? 1 : 1 + model.chain_step * Math.min(Math.max(chains - 1, 0), model.chain_max_extra);
     var factor = (DATA.category_factors && DATA.category_factors[row.category] !== undefined) ? DATA.category_factors[row.category] : 1.0;
     return Math.max(1, Math.round(row.tvl_usd * row.base_multiple * growthMult * maturity * chainMult * factor));
   }
@@ -168,7 +175,7 @@
     return el('section', { class: 'lede' },
       el('div', null,
         el('h1', { text: DATA.board_size + ' pre-token protocols, ranked by implied value' }),
-        el('p', { text: 'Every strict-tokenless protocol in the snapshot: the ' + DATA.watchlist_size + ' on the watchlist plus ' + DATA.early_size + ' outside it, including 20 above the watchlist floor. Implied value is a model, not a promise — each rank carries a bootstrap range and a costed farm verdict.' })
+        el('p', { text: 'Every strict-tokenless protocol in the snapshot: the ' + DATA.watchlist_size + ' on the watchlist plus ' + DATA.early_size + ' outside it, including 20 above the watchlist floor. Implied value is a model, not a promise.' })
       ),
       el('div', { class: 'facts' },
         el('div', { class: 'fact' }, el('span', { text: 'Watchlist covered' }), el('b', { text: DATA.watchlist_size + ' / ' + DATA.watchlist_size })),
@@ -315,7 +322,7 @@
     });
     return el('section', { class: 'panel model tge' },
       el('h2', { text: 'Most likely to launch a token' }),
-      el('p', { class: 'sub', text: 'The main board ranks by implied value, which is size first -- and size is why B2B vault businesses lead it: Steakhouse Financial and Sentora Curator, the two largest vaults, hold ranks 1 and 2. This view ranks the same rows by implied value among the consumer categories only: the protocols a retail token fits. It is led by USDD, a CDP stablecoin, at board rank 3. Risk Curators and Onchain Capital Allocators are excluded here, not hidden -- see below.' }),
+      el('p', { class: 'sub', text: 'The main board ranks by size first, so B2B vaults lead it (Sentora and Steakhouse hold ranks 1 and 2). This view ranks the same rows among the consumer categories only: the protocols a retail token fits. It is led by USDD, a CDP stablecoin, at board rank 5. Risk Curators and Onchain Capital Allocators are excluded here, not hidden -- see below.' }),
       el('div', { class: 'table-wrap' },
         el('table', null,
           el('caption', { class: 'sub', text: 'Top 10 by implied value among non-vault categories. Select a row for its model and farm plan.' }),
@@ -335,17 +342,32 @@
   function modelPanel() {
     var m = DATA.model;
     var fit = DATA.fit || {};
+    var terms = DATA.terms || {};
     var farmCount = DATA.rows.filter(function (r) { return r.verdict === 'FARM'; }).length;
-    var minP = Math.min.apply(null, DATA.rows.map(function (r) { return r.farm_economics ? r.farm_economics.p_launch : 1; }));
+    var thinCount = DATA.rows.filter(function (r) { return r.verdict === 'THIN'; }).length;
+    var skipCount = DATA.rows.filter(function (r) { return r.verdict === 'SKIP'; }).length;
+    var factorEntries = Object.keys(DATA.category_factors || {}).filter(function (k) { return DATA.category_factors[k] !== 1; });
+    var factorText = factorEntries.length === 0
+      ? 'Category factors: none — the blind test dropped the system (see validation.md); the category launch rates still scale each row\'s forward chance.'
+      : 'Category factors (shrunk empirical launch rates): ' + factorEntries.sort().map(function (k) { return k + ' ' + DATA.category_factors[k].toFixed(2); }).join(', ') + '.';
+    var formula = 'implied = round( tvl_usd x fitted_multiple(tvl_usd)';
+    if (terms.growth !== false) formula += ' x (1 + clamp(change_7d, ' + m.growth_floor + ', ' + m.growth_cap + ') / 100 x ' + m.growth_weight + ')';
+    formula += ' x ' + (terms.maturity_flat === false ? 'maturity(age)' : '1.0');
+    if (terms.chain !== false) formula += ' x (1 + ' + m.chain_step + ' x min(chains - 1, ' + m.chain_max_extra + '))';
+    if (factorEntries.length > 0) formula += ' x category factor';
+    formula += ' )';
+    var r1 = DATA.rows.filter(function (r) { return r.rank === 1; })[0];
+    var r2 = DATA.rows.filter(function (r) { return r.rank === 2; })[0];
+    var rangeText = (r1 && r2)
+      ? 'Ranks carry bootstrap ranges (200 refits): rank 1 ' + r1.name + ' spans ' + r1.rank_range[0] + '-' + r1.rank_range[1] + ', rank 2 ' + r2.name + ' ' + r2.rank_range[0] + '-' + r2.rank_range[1] + '.'
+      : 'Ranks carry bootstrap ranges (200 refits).';
     return el('section', { class: 'panel model' },
       el('h2', { text: 'How implied value is computed' }),
       el('p', { class: 'sub', text: 'Every row is scored by one function of the snapshot figures. No protocol name is special-cased, and no row is hand-picked.' }),
-      el('div', { class: 'formula' },
-        'implied = round( tvl_usd x fitted_multiple(tvl_usd) x (1 + clamp(change_7d, ' + m.growth_floor + ', ' + m.growth_cap + ') / 100 x ' + m.growth_weight + ') x 1.0 x (1 + ' + m.chain_step + ' x min(chains - 1, ' + m.chain_max_extra + ')) x category factor )'
-      ),
-      el('p', { class: 'sub', text: 'The multiple is fitted, not assumed: log(mcap) = ' + (fit.intercept !== undefined ? fit.intercept.toFixed(3) : 'n/a') + ' + ' + (fit.slope !== undefined ? fit.slope.toFixed(3) : 'n/a') + ' x log(TVL) over ' + (fit.n !== undefined ? fit.n : 'n/a') + ' clean comps (R-squared ' + (fit.r2 !== undefined ? fit.r2.toFixed(3) : 'n/a') + '), so the multiple falls from ~0.79 at $5M TVL to ~0.03 at $1B. It beat the flat 0.25 multiple out of sample (5-fold CV log-RMSE ' + (fit.cv_fit !== undefined ? fit.cv_fit.toFixed(3) : 'n/a') + ' vs ' + (fit.cv_flat !== undefined ? fit.cv_flat.toFixed(3) : 'n/a') + '; leave-one-out ' + (fit.loo_fit !== undefined ? fit.loo_fit.toFixed(3) : 'n/a') + ' vs ' + (fit.loo_flat !== undefined ? fit.loo_flat.toFixed(3) : 'n/a') + ') -- had it lost, the build would have used the flat multiple instead. See dashboard/validation.md for the full check.' }),
-      el('p', { class: 'sub', text: 'Maturity is flat (1.0): the snapshot\'s launch hazard falls with age instead of rising, so age earns no bonus. Category factors are shrunk empirical launch rates (cohort aged at least a year): Dexs 1.27, Lending 1.28, RWA 1.02, Yield 1.02, Basis Trading 1.08, CDP 1.00, Onchain Capital Allocator 0.77, Risk Curators 0.7 (kept at the old prior -- its shrunk factor is unstable across splits).' }),
-      el('p', { class: 'sub', text: 'Each row also carries a costed farm verdict: setup gas plus $2/week plus the T-bill opportunity cost on the capital (4.5%/yr), a break-even allocation, and expected value at $100/$500/$2,000. ' + farmCount + ' of ' + DATA.board_size + ' rows read FARM under the stated rule, because the lowest planning launch rate is ' + minP.toFixed(2) + ' and costs are $13-22 -- the verdict does not discriminate here, so read the break-even and EV figures instead. Ranks carry bootstrap ranges (200 refits): rank 1 Steakhouse Financial spans 1-2, rank 2 Sentora Curator 2-3.' }),
+      el('div', { class: 'formula' }, formula),
+      el('p', { class: 'sub', text: 'The multiple is fitted, not assumed: log(mcap) = ' + (fit.intercept !== undefined ? fit.intercept.toFixed(3) : 'n/a') + ' + ' + (fit.slope !== undefined ? fit.slope.toFixed(3) : 'n/a') + ' x log(TVL) over ' + (fit.n !== undefined ? fit.n : 'n/a') + ' clean comps (R-squared ' + (fit.r2 !== undefined ? fit.r2.toFixed(3) : 'n/a') + '). It beat the flat 0.25 multiple out of sample (5-fold CV log-RMSE ' + (fit.cv_fit !== undefined ? fit.cv_fit.toFixed(3) : 'n/a') + ' vs ' + (fit.cv_flat !== undefined ? fit.cv_flat.toFixed(3) : 'n/a') + '; leave-one-out ' + (fit.loo_fit !== undefined ? fit.loo_fit.toFixed(3) : 'n/a') + ' vs ' + (fit.loo_flat !== undefined ? fit.loo_flat.toFixed(3) : 'n/a') + ') -- had it lost, the build would have used flat instead (see validation.md).' }),
+      el('p', { class: 'sub', text: 'Maturity is flat (1.0): the snapshot\'s launch hazard falls with age instead of rising, so age earns no bonus. ' + factorText }),
+      el('p', { class: 'sub', text: 'Each row also carries a costed farm verdict under a strict rule: FARM when EV at $500 is at least 3x the total cost and the forward launch chance is at least 10%; THIN when it only repays at the $2,000 scenario or the chance is 5-10%; SKIP otherwise. ' + farmCount + ' FARM, ' + thinCount + ' THIN, ' + skipCount + ' SKIP of ' + DATA.board_size + ' rows. The forward chance is the no-token clock at the row\'s age, scaled by its category rate; capital is sized from the break-even. ' + rangeText }),
       el('p', { class: 'sub', text: 'Honest limits: the snapshot has no parentProtocol field, so that check cannot be performed; the snapshot says nothing about funding, team or token plans, so implied value is a size-and-age estimate only. Farm plans are templated from category, chain, TVL and age, not written by hand per protocol. The board is dominated by Risk Curators (34 of 198 rows), many of them B2B vaults that may never launch a token.' })
     );
   }
@@ -396,10 +418,12 @@
           el('div', null, el('span', { text: 'Opportunity cost (T-bill 4.5%/yr)' }), el('b', { class: 'num', text: fmtUsd(fe.opportunity_cost_usd) })),
           el('div', null, el('span', { text: 'Total cost' }), el('b', { class: 'num', text: fmtUsd(fe.total_cost_usd) })),
           el('div', null, el('span', { text: 'Planning launch rate' }), el('b', { class: 'num', text: (fe.p_launch * 100).toFixed(1) + '%' })),
+          el('div', null, el('span', { text: 'Forward hazard (no-token clock)' }), el('b', { class: 'num', text: fe.hazard_per_year + '/yr' })),
           el('div', null, el('span', { text: 'Break-even allocation' }), el('b', { class: 'num', text: fmtUsd(fe.break_even_usd) })),
-          el('div', null, el('span', { text: 'EV at $100 / $500 / $2,000' }), el('b', { class: 'num', text: fmtUsd(fe.ev_100) + ' / ' + fmtUsd(fe.ev_500) + ' / ' + fmtUsd(fe.ev_2000) }))
+          el('div', null, el('span', { text: 'EV at $100 / $500 / $2,000' }), el('b', { class: 'num', text: fmtUsd(fe.ev_100) + ' / ' + fmtUsd(fe.ev_500) + ' / ' + fmtUsd(fe.ev_2000) })),
+          el('div', null, el('span', { text: 'EV at $500 vs cost (FARM needs 3x)' }), el('b', { class: 'num', text: fe.ev_500_ratio + 'x' }))
         ),
-        el('p', { class: 'sub', text: 'The launch rate is the category\'s backward-looking base rate, not a forecast. The $100/$500/$2,000 scenarios are labelled, not predictions.' })
+        el('p', { class: 'sub', text: 'The launch rate is the forward 12-month probability from the no-token clock at this protocol\'s age, scaled by its category\'s launch rate — a planning rate, not a forecast. Capital is sized from the break-even. The $100/$500/$2,000 scenarios are labelled, not predictions.' })
       ));
     }
     dialog.appendChild(el('section', { class: 'detail-section' },

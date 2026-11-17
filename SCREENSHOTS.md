@@ -12,9 +12,9 @@ sudah jadi — BUKAN hasil generate):
 
 Syarat gate: tiap file ≤ 512 KiB, sisi panjang ≤ 1440 px, sisi pendek ≥ 800 px.
 
-Ketiga file di sini diambil 17 Nov 2026 dari dashboard final radar-3 di Chromium headless (viewport 1440×900, tanpa error console):
-1. `1-board.png` — board penuh, 198 baris (150.727 byte)
-2. `2-detail.png` — dialog detail Sentora Curator, rank 2 dari 198, dengan rincian model (fitted multiple, maturity flat, category factor, rank range 2-3) + farm economics dengan verdict FARM (170.578 byte). Sentora dipilih karena ia baris baru tertinggi dari 20 baris di atas floor lama; rank 1 adalah Steakhouse Financial.
-3. `3-filtered.png` — panel "Most likely to launch a token" (USDD, Bittensor dTAO, Figure Markets Prime, BitFi Basis, OnRe, CIAN Yield Layer, Defi Saver Asset Management, OpenTrade, Plume Vaults, Polymarket International + catatan "Flagged Lower" untuk Steakhouse/Sentora/Veda), diambil dari dashboard baru di Chromium headless (viewport 1440×900, tanpa error console, 122.711 byte)
+Ketiga file di sini diambil 18 Nov 2026 dari dashboard final radar-4 di Chromium headless (viewport 1440×900, tanpa error console):
+1. `1-board.png` — board penuh, 198 baris (151.394 byte). Rank 1 Sentora Curator $47,6M (THIN), rank 2 Steakhouse Financial $47,6M (THIN), rank 3 Gauntlet $38,2M; badge vonis FARM/THIN terlihat (Nonce Capital FARM rank 6, Bittensor dTAO FARM rank 8).
+2. `2-detail.png` — dialog detail Sentora Curator, rank 1 dari 198, dengan rincian model radar-4 (fitted multiple 0,0173, growth multiplier 1, maturity flat 1, chain multiplier 1, category factor 1, rank range 1-1) + farm economics dengan verdict THIN (capital $150, hold 30 hari, total cost $17) (167.434 byte).
+3. `3-filtered.png` — panel "Most likely to launch a token" (USDD board rank 5, Bittensor dTAO 8, Polymarket International 9, OnRe 10, CIAN Yield Layer 12, Defi Saver Asset Management 13, Symbiotic 14, OpenTrade 15, Lightning Network 18, BitFi Basis 19 + catatan "Flagged Lower" untuk Sentora/Steakhouse/Gauntlet), diambil dari dashboard baru di Chromium headless (viewport 1440×900, tanpa error console, 118.749 byte)
 
-Riwayat: ketiga file sebelumnya diambil 16 Nov 2026 (178 baris, radar-2); file ke-3 diganti 17 Nov 2026 di branch improvement-r1-r2. Ketiganya diganti lagi 17 Nov 2026 di branch improvement-round2 (radar-3, 198 baris).
+Riwayat: ketiga file sebelumnya diambil 16 Nov 2026 (178 baris, radar-2); file ke-3 diganti 17 Nov 2026 di branch improvement-r1-r2. Ketiganya diganti lagi 17 Nov 2026 di branch improvement-round2 (radar-3, 198 baris). Ketiganya diganti lagi 18 Nov 2026 di branch improvement-round5 (radar-4, 198 baris).

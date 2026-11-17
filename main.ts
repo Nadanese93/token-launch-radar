@@ -129,7 +129,7 @@ function main(): void {
     die(`invalid snapshot ${input}: ${err instanceof Error ? err.message : String(err)}`);
   }
 
-  const { board, radar, fit, rates } = buildRadar(snap);
+  const { board, radar, fit, rates, ablation } = buildRadar(snap);
   const problem = boardIssue(board, snap);
   if (problem !== null && problem !== undefined) {
     die(`board failed its checks: ${problem}`);
@@ -161,7 +161,7 @@ function main(): void {
   // The validation page, generated at build from the fit, the rates and the board, so the
   // dossier carries the numbers behind the model (it is written after the copy so it lands
   // in the output dashboard before buildDossier reads it).
-  writeFileSync(join(dashOut, 'validation.md'), validationMarkdown(fit, rates, board, snap), 'utf8');
+  writeFileSync(join(dashOut, 'validation.md'), validationMarkdown(fit, rates, board, snap, ablation), 'utf8');
 
   // The dossier is built from what now sits in the output directory, so
   // the scorer can rebuild the identical bytes from the same files.
@@ -188,10 +188,20 @@ function main(): void {
       `(+ dashboard/ and ${shots.length} screenshots)`,
   );
   console.log(
-    `fit: log(mcap) = ${fit.intercept.toFixed(3)} + ${fit.slope.toFixed(3)}*log(TVL), R2=${fit.r2.toFixed(3)}, n=${fit.n}, ` +
+    `fit (${fit.kind}): log(mcap) = ${fit.intercept.toFixed(3)} + ${fit.slope.toFixed(3)}*log(TVL), R2=${fit.r2.toFixed(3)}, n=${fit.n}, ` +
       `CV ${fit.cv_fit.toFixed(3)} vs flat ${fit.cv_flat.toFixed(3)}, LOO ${fit.loo_fit.toFixed(3)} vs flat ${fit.loo_flat.toFixed(3)}, ` +
       `split ${Number.isFinite(fit.split_fit) ? fit.split_fit.toFixed(3) : 'n/a'} vs flat ${Number.isFinite(fit.split_flat) ? fit.split_flat.toFixed(3) : 'n/a'}, used_flat=${fit.used_flat}`,
   );
+  console.log(
+    `fit candidates: ${fit.candidates.map((c) => `${c.kind} CV ${c.cv.toFixed(3)} / LOO ${c.loo.toFixed(3)} / split ${Number.isFinite(c.split) ? c.split.toFixed(3) : 'n/a'}`).join('; ')}`,
+  );
+  console.log(
+    `ablation (full-model log-RMSE vs comps' mcap): baseline CV ${ablation.baseline.cv.toFixed(3)} / LOO ${ablation.baseline.loo.toFixed(3)} / split ${Number.isFinite(ablation.baseline.split) ? ablation.baseline.split.toFixed(3) : 'n/a'}; ` +
+      ablation.rows.map((r) => `drop ${r.term}: CV ${r.cv.toFixed(3)} (d ${r.delta_cv >= 0 ? '+' : ''}${r.delta_cv.toFixed(3)}) -> ${r.kept ? 'KEPT' : 'DROPPED'}`).join('; '),
+  );
+  const verdicts = { FARM: 0, THIN: 0, SKIP: 0 };
+  for (const row of board) verdicts[row.verdict]++;
+  console.log(`verdicts: FARM ${verdicts.FARM}, THIN ${verdicts.THIN}, SKIP ${verdicts.SKIP}`);
   console.log(`rates: cohort ${rates.cohort_n}, overall ${(rates.overall_rate * 100).toFixed(1)}%, hazard ${rates.hazard_per_year.toFixed(3)}/yr; ${rates.adopted_note}`);
 }
 

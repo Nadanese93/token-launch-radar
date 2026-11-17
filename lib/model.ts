@@ -98,7 +98,7 @@ export const MODEL: ModelConstants = {
 };
 
 /** The model's version label: the dashboard names it and the rules quote it. */
-export const MODEL_VERSION = 'radar-3';
+export const MODEL_VERSION = 'radar-4';
 
 /** The fitted comps curve's fallback: the flat multiple used when the fit's guardrail fails. */
 export const FLAT_MULTIPLE = 0.25;
@@ -120,15 +120,41 @@ export const BOOTSTRAP_REPS = 200;
  *  not only the rows below the watchlist floor. The floor is where the house's reading
  *  started, not where this radar stops. EARLY_ROWS is intentionally gone. */
 
-/** The fitted comps curve and its validation (radar-3, computed from the snapshot at build). */
+/** The fitted comps curve's kind (radar-4, V3): OLS log-log, Huber-robust log-log, or
+ *  one OLS curve per category (categories with >= 8 comps; the rest use the global curve). */
+export type FitKind = 'ols' | 'huber' | 'per-category';
+
+/** One candidate curve's out-of-sample log-RMSEs, for the V3 comparison table. */
+export interface FitCandidate {
+  kind: FitKind;
+  cv: number;
+  loo: number;
+  split: number;
+}
+
+/** A per-category curve (V3): its own OLS coefficients, or the global curve when absent. */
+export interface CategoryCurve {
+  intercept: number;
+  slope: number;
+  n: number;
+}
+
+/** The fitted comps curve and its validation (radar-4, computed from the snapshot at build). */
 export interface CompsFit {
+  /** Which curve the build uses: the V3 winner, or OLS when no challenger wins on all three. */
+  kind: FitKind;
   /** Clean comps the fit ran on. */
   n: number;
-  /** OLS log-log coefficients: log(mcap) = intercept + slope * log(TVL). */
+  /** OLS log-log coefficients: log(mcap) = intercept + slope * log(TVL). For Huber, the
+   *  robust coefficients; for per-category, the global OLS reference (see byCategory). */
   intercept: number;
   slope: number;
   /** R-squared of the fit. */
   r2: number;
+  /** Per-category curves when kind is 'per-category'. */
+  byCategory?: Record<string, CategoryCurve>;
+  /** The V3 candidate table: every kind's out-of-sample log-RMSEs. */
+  candidates: FitCandidate[];
   /** 5-fold cross-validated log-RMSE, fitted curve vs the flat multiple. */
   cv_fit: number;
   cv_flat: number;
@@ -178,7 +204,7 @@ export interface LaunchRates {
   maturity_flat: boolean;
 }
 
-/** One row's farm economics (radar-3): costed, with a verdict. All figures in whole US dollars. */
+/** One row's farm economics (radar-4): costed, with a verdict. All figures in whole US dollars. */
 export interface FarmEconomics {
   capital_usd: number;
   hold_days: number;
@@ -186,15 +212,19 @@ export interface FarmEconomics {
   weekly_gas_usd: number;
   opportunity_cost_usd: number;
   total_cost_usd: number;
-  /** Planning probability of a launch: the row's shrunk category launch rate (a backward-looking
-   *  base rate, not a forecast — see the dossier's caveat). */
+  /** Forward planning probability of a launch within 12 months: the age-specific hazard
+   *  scaled by the row's category factor (radar-4, V1) — a planning rate, not a forecast. */
   p_launch: number;
+  /** The forward hazard (per year) behind p_launch, for the worked examples. */
+  hazard_per_year: number;
   /** Allocation at launch that repays the cost: total_cost / p_launch. */
   break_even_usd: number;
   /** Expected net value (p_launch x allocation - total_cost) at the three labelled scenarios. */
   ev_100: number;
   ev_500: number;
   ev_2000: number;
+  /** EV at $500 as a multiple of total cost: the FARM bar is >= 3. */
+  ev_500_ratio: number;
   /** FARM / THIN / SKIP, by the rule in farmEconomics. */
   verdict: 'FARM' | 'THIN' | 'SKIP';
 }
@@ -299,6 +329,8 @@ export interface RadarData {
   /** radar-3: the adopted category factors and planning launch rates, keyed by category. */
   category_factors: Record<string, number>;
   p_launch: Record<string, number>;
+  /** radar-4 (V2): which model terms the blind test kept, for the dashboard's recompute. */
+  terms: { growth: boolean; chain: boolean; maturity_flat: boolean; dropped_categories: string[] };
   /** radar-3: the T-bill assumption behind farm opportunity cost. */
   tbill: { rate: number; as_of: string };
   /** radar-3: whether the data-driven factors were adopted, in one line. */
@@ -359,11 +391,25 @@ export interface Scoring {
   overall_rate: number;
   /** True when U3 was adopted: maturity is the flat no-token clock (1.0 for every row). */
   maturityFlat: boolean;
+  /** radar-4 (V2 ablation): which model terms the blind test kept. A dropped term is
+   *  neutralised (growth 1.0, chain 1.0) rather than hand-tuned. */
+  useGrowth: boolean;
+  useChain: boolean;
+  /** radar-4 (V1): the ADOPTED category factors (pre-ablation) that scale the forward
+   *  hazard for p_launch. The blind test judges the value model against market caps;
+   *  the hazard scaling judges launch frequency, a different target — the category
+   *  base rates stay in the launch probability even when the factor leaves the value. */
+  hazardFactors: Record<string, number>;
 }
 
-/** The fitted multiple at a TVL: the comps curve, or the flat 0.25 when its guardrail failed. */
-export function fittedMultiple(tvlUsd: number, fit: CompsFit): number {
+/** The fitted multiple at a TVL: the comps curve, or the flat 0.25 when its guardrail failed.
+ *  For a per-category fit, the row's own category curve when it has one, else the global curve. */
+export function fittedMultiple(tvlUsd: number, fit: CompsFit, category?: string | null): number {
   if (fit.used_flat) return FLAT_MULTIPLE;
+  if (fit.kind === 'per-category' && category !== null && category !== undefined) {
+    const c = fit.byCategory?.[category];
+    if (c !== undefined) return Math.exp(c.intercept) * Math.pow(tvlUsd, c.slope - 1);
+  }
   return Math.exp(fit.intercept) * Math.pow(tvlUsd, fit.slope - 1);
 }
 
@@ -377,13 +423,13 @@ export function impliedValue(
   const age = ageDays(asOf, protocol.listed_at);
   const rawGrowth = finite(protocol.change_7d, 0);
   const growthPct = Math.min(model.growth_cap, Math.max(model.growth_floor, rawGrowth));
-  const growthMult = 1 + (growthPct / 100) * model.growth_weight;
+  const growthMult = scoring.useGrowth ? 1 + (growthPct / 100) * model.growth_weight : 1.0;
   const maturityMult = scoring.maturityFlat
     ? 1.0
     : model.maturity_floor + (Math.min(Math.max(age ?? model.unknown_age_days, 0), model.maturity_days) / model.maturity_days) * model.maturity_range;
-  const chainMult = chainMultiplier(protocol, model);
+  const chainMult = scoring.useChain ? chainMultiplier(protocol, model) : 1.0;
   const categoryPriorValue = scoring.factors[protocol.category ?? ''] ?? 1.0;
-  const baseMultiple = fittedMultiple(protocol.tvl_usd, scoring.fit);
+  const baseMultiple = fittedMultiple(protocol.tvl_usd, scoring.fit, protocol.category);
   const base = protocol.tvl_usd * baseMultiple;
   const implied = Math.max(1, Math.round(base * growthMult * maturityMult * chainMult * categoryPriorValue));
   return { implied, baseMultiple, growthPct, growthMult, maturityMult, chainMult, categoryPriorValue, age };
@@ -483,66 +529,196 @@ export function cleanComps(snapshot: Snapshot): {
   };
 }
 
+/** Weighted OLS on (x, y) with weights w: intercept, slope, R-squared (unweighted residuals). */
+function wols(xs: number[], ys: number[], ws: number[]): { intercept: number; slope: number; r2: number } {
+  let sw = 0;
+  let mx = 0;
+  let my = 0;
+  for (let i = 0; i < xs.length; i++) {
+    sw += ws[i]!;
+    mx += ws[i]! * xs[i]!;
+    my += ws[i]! * ys[i]!;
+  }
+  mx /= sw;
+  my /= sw;
+  let sxx = 0;
+  let sxy = 0;
+  let syy = 0;
+  for (let i = 0; i < xs.length; i++) {
+    const dx = xs[i]! - mx;
+    const dy = ys[i]! - my;
+    sxx += ws[i]! * dx * dx;
+    sxy += ws[i]! * dx * dy;
+    syy += dy * dy;
+  }
+  const slope = sxx === 0 ? 0 : sxy / sxx;
+  const intercept = my - slope * mx;
+  let ssRes = 0;
+  for (let i = 0; i < xs.length; i++) {
+    const e = ys[i]! - (intercept + slope * xs[i]!);
+    ssRes += e * e;
+  }
+  return { intercept, slope, r2: syy === 0 ? 0 : 1 - ssRes / syy };
+}
+
+/** Huber robust fit (V3): iteratively reweighted least squares, k=1.345, scale 1.4826 x MAD
+ *  of the residuals, 10 iterations from the OLS start. Deterministic; outliers are
+ *  downweighted, never dropped, so the cleaning counts stay the same. */
+function huber(xs: number[], ys: number[]): { intercept: number; slope: number; r2: number } {
+  let f = ols(xs, ys);
+  for (let iter = 0; iter < 10; iter++) {
+    const res = xs.map((x, i) => ys[i]! - (f.intercept + f.slope * x));
+    const sorted = [...res].map(Math.abs).sort((a, b) => a - b);
+    const mad = sorted[Math.floor(sorted.length / 2)]!;
+    const scale = 1.4826 * mad;
+    if (scale === 0) break;
+    const ws = res.map((r) => {
+      const u = Math.abs(r) / (1.345 * scale);
+      return u <= 1 ? 1 : 1 / u;
+    });
+    const next = wols(xs, ys, ws);
+    if (Math.abs(next.intercept - f.intercept) < 1e-9 && Math.abs(next.slope - f.slope) < 1e-9) {
+      f = next;
+      break;
+    }
+    f = next;
+  }
+  return f;
+}
+
+/** One fitted curve of the given kind on (xs, ys) with a category per row: the global
+ *  coefficients, plus a per-category curve for every category with >= 8 rows (V3). */
+function fitCurve(
+  xs: number[],
+  ys: number[],
+  cats: Array<string | null>,
+  kind: FitKind,
+): { intercept: number; slope: number; r2: number; byCategory?: Record<string, CategoryCurve> } {
+  if (kind === 'huber') return huber(xs, ys);
+  const global = ols(xs, ys);
+  if (kind !== 'per-category') return global;
+  const byCategory: Record<string, CategoryCurve> = {};
+  const idxByCat = new Map<string, number[]>();
+  cats.forEach((c, i) => {
+    const key = c ?? '(no category)';
+    const arr = idxByCat.get(key) ?? [];
+    arr.push(i);
+    idxByCat.set(key, arr);
+  });
+  for (const [cat, idx] of idxByCat.entries()) {
+    if (idx.length < 8) continue;
+    const f = ols(idx.map((i) => xs[i]!), idx.map((i) => ys[i]!));
+    byCategory[cat] = { intercept: f.intercept, slope: f.slope, n: idx.length };
+  }
+  return { ...global, byCategory };
+}
+
+/** Predict log(mcap) for one row under a fitted curve of the given kind. */
+function predictCurve(x: number, cat: string | null, curve: { intercept: number; slope: number; byCategory?: Record<string, CategoryCurve> }, kind: FitKind): number {
+  if (kind === 'per-category' && cat !== null) {
+    const c = curve.byCategory?.[cat];
+    if (c !== undefined) return c.intercept + c.slope * x;
+  }
+  return curve.intercept + curve.slope * x;
+}
+
 /**
- * The fitted comps curve (U2): OLS log(mcap) ~ log(TVL) over the clean comps, validated
- * out-of-sample. Guardrail: the curve is used ONLY when it beats the flat 0.25 multiple
- * on 5-fold CV log-RMSE; otherwise the build falls back to flat and says so in the dossier.
- * (This snapshot: CV fit 2.005 vs flat 2.177, LOO fit 1.967 vs flat 2.177 — the curve wins.)
+ * One curve kind's out-of-sample log-RMSEs (V3): 5-fold CV (deterministic folds by sorted
+ * slug), leave-one-out, and the listed_at split (train listed < 2024, test >= 2024).
+ * Each fold refits the curve on its training rows only, so the numbers are out-of-sample.
+ */
+function validateCurve(comps: SnapshotProtocol[], kind: FitKind): { cv: number; loo: number; split: number } {
+  const xs = comps.map((p) => Math.log(p.tvl_usd));
+  const ys = comps.map((p) => Math.log(p.mcap_usd!));
+  const cats = comps.map((p) => p.category);
+
+  const order = comps.map((p, i) => i).sort((a, b) => comps[a]!.slug.localeCompare(comps[b]!.slug));
+  const cvPred: number[] = new Array(comps.length).fill(0);
+  for (let fold = 0; fold < 5; fold++) {
+    const train = order.filter((_, i) => i % 5 !== fold);
+    const test = order.filter((_, i) => i % 5 === fold);
+    const f = fitCurve(train.map((i) => xs[i]!), train.map((i) => ys[i]!), train.map((i) => cats[i]!), kind);
+    for (const i of test) cvPred[i] = predictCurve(xs[i]!, cats[i]!, f, kind);
+  }
+  const cv = logRmse(cvPred, ys);
+
+  const looPred: number[] = new Array(comps.length).fill(0);
+  for (let held = 0; held < comps.length; held++) {
+    const train = comps.map((_, i) => i).filter((i) => i !== held);
+    const f = fitCurve(train.map((i) => xs[i]!), train.map((i) => ys[i]!), train.map((i) => cats[i]!), kind);
+    looPred[held] = predictCurve(xs[held]!, cats[held]!, f, kind);
+  }
+  const loo = logRmse(looPred, ys);
+
+  const splitTrain = comps.map((p, i) => i).filter((i) => comps[i]!.listed_at !== null && comps[i]!.listed_at! < '2024-01-01');
+  const splitTest = comps.map((p, i) => i).filter((i) => comps[i]!.listed_at !== null && comps[i]!.listed_at! >= '2024-01-01');
+  let split = Number.NaN;
+  if (splitTrain.length >= 2 && splitTest.length > 0) {
+    const f = fitCurve(splitTrain.map((i) => xs[i]!), splitTrain.map((i) => ys[i]!), splitTrain.map((i) => cats[i]!), kind);
+    split = logRmse(splitTest.map((i) => predictCurve(xs[i]!, cats[i]!, f, kind)), splitTest.map((i) => ys[i]!));
+  }
+  return { cv, loo, split };
+}
+
+/**
+ * The fitted comps curve (U2 + V3): OLS log(mcap) ~ log(TVL) over the clean comps, validated
+ * out-of-sample — now against two challengers. Huber (robust to outliers) and per-category
+ * curves are each validated on the same three tests (5-fold CV, LOO, listed_at split); a
+ * challenger is used ONLY when it beats OLS on ALL THREE. When none does, OLS stays.
+ * Guardrail: the chosen curve is used ONLY when it beats the flat 0.25 multiple on 5-fold
+ * CV log-RMSE; otherwise the build falls back to flat and says so in the dossier.
+ * (radar-3: CV fit 2.005 vs flat 2.177, LOO fit 1.967 vs flat 2.177 — the curve wins.)
  */
 export function fitComps(snapshot: Snapshot): CompsFit {
   const { comps, counts } = cleanComps(snapshot);
   const xs = comps.map((p) => Math.log(p.tvl_usd));
   const ys = comps.map((p) => Math.log(p.mcap_usd!));
-  const { intercept, slope, r2 } = ols(xs, ys);
   const flatLog = Math.log(FLAT_MULTIPLE);
   const flatPred = xs.map((x) => x + flatLog);
 
-  // 5-fold CV, deterministic folds: comps sorted by slug, fold = index mod 5.
-  const order = comps.map((p, i) => i).sort((a, b) => comps[a].slug.localeCompare(comps[b].slug));
-  const cvPred: number[] = new Array(comps.length).fill(0);
-  for (let fold = 0; fold < 5; fold++) {
-    const train = order.filter((_, i) => i % 5 !== fold);
-    const test = order.filter((_, i) => i % 5 === fold);
-    const f = ols(train.map((i) => xs[i]), train.map((i) => ys[i]));
-    for (const i of test) cvPred[i] = f.intercept + f.slope * xs[i];
+  const kinds: FitKind[] = ['ols', 'huber', 'per-category'];
+  const candidates: FitCandidate[] = kinds.map((kind) => ({ kind, ...validateCurve(comps, kind) }));
+  const olsCand = candidates[0]!;
+  let chosen: FitKind = 'ols';
+  let bestChallenger: FitCandidate | null = null;
+  for (const cand of candidates.slice(1)) {
+    if (cand.cv < olsCand.cv && cand.loo < olsCand.loo && cand.split < olsCand.split) {
+      if (bestChallenger === null || cand.cv < bestChallenger.cv) bestChallenger = cand;
+    }
   }
-  const cvFit = logRmse(cvPred, ys);
-  const cvFlat = logRmse(flatPred, ys);
+  if (bestChallenger !== null) chosen = bestChallenger.kind;
 
-  // Leave-one-out: fit on n-1, predict the held-out row.
-  const looPred: number[] = new Array(comps.length).fill(0);
-  for (let held = 0; held < comps.length; held++) {
-    const train = comps.map((_, i) => i).filter((i) => i !== held);
-    const f = ols(train.map((i) => xs[i]), train.map((i) => ys[i]));
-    looPred[held] = f.intercept + f.slope * xs[held];
+  const curve = fitCurve(xs, ys, comps.map((p) => p.category), chosen);
+  // In-sample R-squared of the chosen curve (per-category predictions where they exist).
+  let ssRes = 0;
+  let ssTot = 0;
+  const my = ys.reduce((a, b) => a + b, 0) / ys.length;
+  for (let i = 0; i < xs.length; i++) {
+    const pred = predictCurve(xs[i]!, comps[i]!.category, curve, chosen);
+    ssRes += (ys[i]! - pred) ** 2;
+    ssTot += (ys[i]! - my) ** 2;
   }
-  const looFit = logRmse(looPred, ys);
-  const looFlat = logRmse(flatPred, ys);
+  const r2 = ssTot === 0 ? 0 : 1 - ssRes / ssTot;
+  const chosenCand = candidates.find((c) => c.kind === chosen)!;
 
-  // listed_at split: train on comps listed before 2024, test on comps listed 2024 or later —
-  // the closest thing to "would the curve have predicted the next year's launches".
-  const splitTrain = comps.map((p, i) => i).filter((i) => comps[i].listed_at !== null && comps[i].listed_at! < '2024-01-01');
-  const splitTest = comps.map((p, i) => i).filter((i) => comps[i].listed_at !== null && comps[i].listed_at! >= '2024-01-01');
-  let splitFit = Number.NaN;
-  let splitFlat = Number.NaN;
-  if (splitTrain.length >= 2 && splitTest.length > 0) {
-    const sf = ols(splitTrain.map((i) => xs[i]), splitTrain.map((i) => ys[i]));
-    splitFit = logRmse(splitTest.map((i) => sf.intercept + sf.slope * xs[i]), splitTest.map((i) => ys[i]));
-    splitFlat = logRmse(splitTest.map((i) => xs[i] + flatLog), splitTest.map((i) => ys[i]));
-  }
-
-  const usedFlat = cvFit >= cvFlat;
+  const usedFlat = chosenCand.cv >= logRmse(flatPred, ys);
   const fit: CompsFit = {
+    kind: chosen,
     n: comps.length,
-    intercept,
-    slope,
+    intercept: curve.intercept,
+    slope: curve.slope,
     r2,
-    cv_fit: cvFit,
-    cv_flat: cvFlat,
-    loo_fit: looFit,
-    loo_flat: looFlat,
-    split_fit: splitFit,
-    split_flat: splitFlat,
+    byCategory: chosen === 'per-category' ? curve.byCategory : undefined,
+    candidates,
+    cv_fit: chosenCand.cv,
+    cv_flat: logRmse(flatPred, ys),
+    loo_fit: chosenCand.loo,
+    loo_flat: logRmse(flatPred, ys),
+    split_fit: chosenCand.split,
+    split_flat: (() => {
+      const splitTest = comps.map((p, i) => i).filter((i) => comps[i]!.listed_at !== null && comps[i]!.listed_at! >= '2024-01-01');
+      return splitTest.length > 0 ? logRmse(splitTest.map((i) => xs[i]! + flatLog), splitTest.map((i) => ys[i]!)) : Number.NaN;
+    })(),
     used_flat: usedFlat,
     multiple_at_tvl: 0,
     cleaning: counts,
@@ -675,46 +851,285 @@ export function launchRates(snapshot: Snapshot, model: ModelConstants = MODEL): 
   };
 }
 
+/* ------------------------------------------------------------------ */
+/* radar-4 (V2): blind-test ablation of the model terms. Each term is   */
+/* judged by whether the full model predicts the comps' market caps     */
+/* better with it than without it, out of sample — the curve is refit   */
+/* per fold, so no term can win on in-sample fit alone.                 */
+/* ------------------------------------------------------------------ */
+
+/** One validation of the full model against the comps' market caps. */
+export interface ModelValidation {
+  cv: number;
+  loo: number;
+  split: number;
+}
+
+/** Which terms a validation variant neutralises (absent = the scoring's own setting). */
+export interface TermOverride {
+  growth?: boolean;
+  chain?: boolean;
+  /** False neutralises every category factor to 1.0. */
+  category?: boolean;
+  /** One category's factor neutralised to 1.0 (only with category left on). */
+  categoryDrop?: string | null;
+  maturityFlat?: boolean;
+}
+
+/** A scoring variant with the override applied. */
+function scoringWith(scoring: Scoring, o: TermOverride): Scoring {
+  const factors = { ...scoring.factors };
+  if (o.category === false) {
+    for (const k of Object.keys(factors)) factors[k] = 1.0;
+  }
+  if (o.categoryDrop !== undefined && o.categoryDrop !== null) factors[o.categoryDrop] = 1.0;
+  return {
+    ...scoring,
+    factors,
+    useGrowth: o.growth ?? scoring.useGrowth,
+    useChain: o.chain ?? scoring.useChain,
+    maturityFlat: o.maturityFlat ?? scoring.maturityFlat,
+  };
+}
+
 /**
- * One row's farm economics (U4): the cost of farming it, the break-even allocation, the
- * expected value at three labelled allocation scenarios, and the verdict. Costs are
+ * The full model's out-of-sample log-RMSE against the comps' market caps (V2): the
+ * log of the implied value the model gives a token protocol, against the log of its
+ * actual market cap. 5-fold CV (curve refit per fold), leave-one-out (curve refit per
+ * held-out row), and the listed_at split (train listed < 2024, test >= 2024). A term
+ * earns its keep only by improving these numbers, not by sounding plausible.
+ */
+export function validateModel(snapshot: Snapshot, scoring: Scoring, overrides: TermOverride = {}): ModelValidation {
+  const { comps } = cleanComps(snapshot);
+  const variant = scoringWith(scoring, overrides);
+  const xs = comps.map((p) => Math.log(p.tvl_usd));
+  const ys = comps.map((p) => Math.log(p.mcap_usd!));
+  const cats = comps.map((p) => p.category);
+  const logImplied = (p: SnapshotProtocol, fit: CompsFit): number => {
+    const v = impliedValue(p, snapshot.as_of, { ...variant, fit });
+    return Math.log(v.implied);
+  };
+  const refit = (idx: number[]): CompsFit => {
+    const f = fitCurve(idx.map((i) => xs[i]!), idx.map((i) => ys[i]!), idx.map((i) => cats[i]!), scoring.fit.kind);
+    return { ...scoring.fit, intercept: f.intercept, slope: f.slope, byCategory: f.byCategory, used_flat: false };
+  };
+
+  const order = comps.map((p, i) => i).sort((a, b) => comps[a]!.slug.localeCompare(comps[b]!.slug));
+  const cvPred: number[] = new Array(comps.length).fill(0);
+  for (let fold = 0; fold < 5; fold++) {
+    const train = order.filter((_, i) => i % 5 !== fold);
+    const test = order.filter((_, i) => i % 5 === fold);
+    const f = refit(train);
+    for (const i of test) cvPred[i] = logImplied(comps[i]!, f);
+  }
+  const cv = logRmse(cvPred, ys);
+
+  const looPred: number[] = new Array(comps.length).fill(0);
+  for (let held = 0; held < comps.length; held++) {
+    const train = comps.map((_, i) => i).filter((i) => i !== held);
+    looPred[held] = logImplied(comps[held]!, refit(train));
+  }
+  const loo = logRmse(looPred, ys);
+
+  const splitTrain = comps.map((p, i) => i).filter((i) => comps[i]!.listed_at !== null && comps[i]!.listed_at! < '2024-01-01');
+  const splitTest = comps.map((p, i) => i).filter((i) => comps[i]!.listed_at !== null && comps[i]!.listed_at! >= '2024-01-01');
+  let split = Number.NaN;
+  if (splitTrain.length >= 2 && splitTest.length > 0) {
+    const f = refit(splitTrain);
+    split = logRmse(splitTest.map((i) => logImplied(comps[i]!, f)), splitTest.map((i) => ys[i]!));
+  }
+  return { cv, loo, split };
+}
+
+/** One ablation row: a term removed, the three validations, and whether it was kept. */
+export interface AblationRow {
+  term: string;
+  category?: string;
+  cv: number;
+  loo: number;
+  split: number;
+  /** CV with the term removed minus CV with it: positive means the term helps. */
+  delta_cv: number;
+  kept: boolean;
+}
+
+/** The ablation's outcome and the decisions buildRadar applies. */
+export interface Ablation {
+  baseline: ModelValidation;
+  rows: AblationRow[];
+  decisions: { useGrowth: boolean; useChain: boolean; maturityFlat: boolean; droppedCategories: string[] };
+}
+
+/**
+ * The blind test (V2): the baseline full model, then the model with each term removed —
+ * growth, chain, the whole category-factor system, the flat maturity (restoring the old
+ * age bonus), and each category's factor on its own (categories with >= 10 comps).
+ * DECISION RULE, stated in advance: a term is KEPT iff removing it worsens the 5-fold CV
+ * log-RMSE by more than 0.001; a tie goes to the simpler model (the term is dropped).
+ * The category system is dropped wholesale only when removing all factors worsens nothing;
+ * otherwise the per-category drops apply.
+ */
+export function ablateModel(snapshot: Snapshot, scoring: Scoring): Ablation {
+  const baseline = validateModel(snapshot, scoring);
+  const keep = (v: ModelValidation): boolean => v.cv - baseline.cv > 0.001;
+  const rows: AblationRow[] = [];
+  const test = (term: string, o: TermOverride, category?: string): AblationRow => {
+    const v = validateModel(snapshot, scoring, o);
+    const row: AblationRow = { term, category, cv: v.cv, loo: v.loo, split: v.split, delta_cv: v.cv - baseline.cv, kept: keep(v) };
+    rows.push(row);
+    return row;
+  };
+
+  const growthRow = test('growth (x0.5 of clamped 7d change)', { growth: false });
+  const chainRow = test('chain (+3% per extra chain, cap +15%)', { chain: false });
+  const catRow = test('category factors (all, shrunk k=20)', { category: false });
+  const maturityRow = test('maturity flat (1.0) vs old age bonus', { maturityFlat: false });
+
+  const { comps } = cleanComps(snapshot);
+  const catCounts = new Map<string, number>();
+  for (const p of comps) {
+    const k = p.category ?? '(no category)';
+    catCounts.set(k, (catCounts.get(k) ?? 0) + 1);
+  }
+  const droppedCategories: string[] = [];
+  if (catRow.kept) {
+    for (const [cat, n] of [...catCounts.entries()].sort((a, b) => b[1] - a[1])) {
+      if (n < 10) continue;
+      const row = test(`category factor: ${cat}`, { categoryDrop: cat }, cat);
+      if (!row.kept) droppedCategories.push(cat);
+    }
+  }
+
+  return {
+    baseline,
+    rows,
+    decisions: {
+      useGrowth: growthRow.kept,
+      useChain: chainRow.kept,
+      maturityFlat: maturityRow.kept,
+      // A wholesale drop zeroes EVERY category's factor, including categories with no
+      // comps of their own (they still have board rows); a per-category drop is only
+      // meaningful when the system as a whole survives.
+      droppedCategories: catRow.kept ? droppedCategories : Object.keys(scoring.factors),
+    },
+  };
+}
+
+/**
+ * The no-token clock as a forward hazard (radar-4, V1/V4-lite): the interval hazard of a
+ * token launch, by age, from the snapshot's own age buckets. The cumulative P(has a token)
+ * by age implies a hazard that starts high (~1/yr in the first months) and falls (~0.2/yr
+ * after two years); the interval hazard between two bucket midpoints is the forward hazard
+ * for a protocol of that age. A protocol still tokenless at its age has already survived
+ * the hazard, so its forward chance is the hazard at ITS age, not the cohort's backward
+ * rate. Boundaries sit halfway between consecutive bucket midpoints. Ages past the last
+ * midpoint use the last interval's hazard. The floor (0.02/yr) only binds when a bucket
+ * records no launches at all, so the maths stays defined.
+ */
+export interface HazardClock {
+  intervals: Array<{ up_to_years: number; hazard: number }>;
+  constant_hazard: number;
+}
+
+export function hazardClock(snapshot: Snapshot): HazardClock {
+  const buckets = hazardBuckets(snapshot);
+  const cum: Array<{ mid: number; h: number }> = buckets.map((b) => ({
+    mid: b.mid_years,
+    h: b.p_token >= 1 ? Number.POSITIVE_INFINITY : -Math.log(1 - b.p_token),
+  }));
+  const bounds = [0.5, 1.125, 2.0, 3.5, 100];
+  const intervals = cum.map((b, i) => {
+    let h: number;
+    if (i === 0) {
+      h = b.h / b.mid;
+    } else {
+      const prev = cum[i - 1]!;
+      h = (b.h - prev.h) / (b.mid - prev.mid);
+    }
+    if (!Number.isFinite(h) || h < 0) h = 0;
+    return { up_to_years: bounds[i]!, hazard: Math.max(h, 0.02) };
+  });
+  let num = 0;
+  let den = 0;
+  for (const b of buckets) {
+    if (!Number.isFinite(b.hazard)) continue;
+    const y = -Math.log(1 - b.p_token);
+    num += b.mid_years * y;
+    den += b.mid_years * b.mid_years;
+  }
+  return { intervals, constant_hazard: den === 0 ? 0 : num / den };
+}
+
+/**
+ * A row's forward launch probability within 12 months (radar-4, V1): the hazard at the
+ * protocol's own age, scaled by its category factor (proportional hazards), converted to a
+ * 12-month probability. Age unknown falls back to the constant hazard. Returns the hazard
+ * used alongside the probability, so the worked examples can show both.
+ */
+export function forwardLaunchProbability(
+  ageDays: number | null,
+  categoryFactor: number,
+  clock: HazardClock,
+): { p_launch: number; hazard: number } {
+  const base = ageDays === null
+    ? clock.constant_hazard
+    : clock.intervals.find((iv) => ageDays / 365 < iv.up_to_years)?.hazard ?? clock.intervals[clock.intervals.length - 1]!.hazard;
+  const hazard = Math.max(base, 0.02) * categoryFactor;
+  return { p_launch: 1 - Math.exp(-hazard), hazard };
+}
+
+/** The cost of farming a position: setup gas + weekly gas over the hold + T-bill opportunity cost. */
+function farmCost(capital: number, hold: number): number {
+  const setupGas = capital >= 150 ? 8 : 4;
+  return setupGas + 2 * (hold / 7) + capital * TBILL_RATE * (hold / 365);
+}
+
+/**
+ * One row's farm economics (radar-4, V1): the cost of farming it, the break-even allocation,
+ * the expected value at three labelled allocation scenarios, and the verdict. Costs are
  * deliberately modest and explicit — gas to set up, weekly gas while holding, and the
  * T-bill opportunity cost on the capital while it sits in the vault (TBILL_RATE/yr, as of
- * TBILL_AS_OF). p_launch is the row's shrunk category launch rate: a BACKWARD-looking base
- * rate, not a forecast — a protocol still tokenless at its age has already survived the
- * hazard, so the forward chance is lower; the verdicts are therefore optimistic and the
- * dossier says so. Scenarios are labelled, not predictions.
+ * TBILL_AS_OF). p_launch is the FORWARD 12-month probability from the no-token clock
+ * (see forwardLaunchProbability), not the backward-looking base rate — a protocol still
+ * tokenless at its age has already survived the hazard, so the forward chance is lower.
+ *
+ * Capital is deposit-sized, not fixed: the first pass costs the TVL-based capital
+ * (capitalFor), whose break-even sizes the deposit (rounded to $10, clamped $50-$500);
+ * costs are then recomputed on that capital. The verdict rule is a rule, not a tune:
+ * FARM when EV at $500 is at least 3x the total cost AND p_launch >= 10%; THIN when
+ * the position only repays at the $2,000 scenario or p_launch is 5-10%; SKIP otherwise.
+ * Scenarios are labelled, not predictions.
  */
-export function farmEconomics(p: SnapshotProtocol, age: number | null, pLaunch: number): FarmEconomics {
-  const capital = capitalFor(p);
+export function farmEconomics(p: SnapshotProtocol, age: number | null, pLaunch: number, hazardPerYear: number): FarmEconomics {
   const hold = holdDaysFor(age);
-  const setupGas = capital >= 150 ? 8 : 4;
-  const weeklyGas = 2;
-  const weeks = hold / 7;
-  const opportunity = capital * TBILL_RATE * (hold / 365);
-  const totalCost = setupGas + weeklyGas * weeks + opportunity;
+  const capital0 = capitalFor(p);
+  const be0 = farmCost(capital0, hold) / pLaunch;
+  const capital = Math.min(500, Math.max(50, Math.round(be0 / 10) * 10));
+  const totalCost = farmCost(capital, hold);
   const breakEven = totalCost / pLaunch;
   const ev = (alloc: number): number => pLaunch * alloc - totalCost;
   const ev100 = ev(100);
   const ev500 = ev(500);
   const ev2000 = ev(2000);
   let verdict: 'FARM' | 'THIN' | 'SKIP';
-  if (ev500 > 0 && pLaunch >= 0.1) verdict = 'FARM';
+  if (ev500 >= 3 * totalCost && pLaunch >= 0.1) verdict = 'FARM';
   else if (ev2000 > 0 || (pLaunch >= 0.05 && pLaunch < 0.1)) verdict = 'THIN';
   else verdict = 'SKIP';
   const round2 = (x: number): number => Math.round(x * 100) / 100;
   return {
     capital_usd: capital,
     hold_days: hold,
-    setup_gas_usd: setupGas,
-    weekly_gas_usd: weeklyGas,
-    opportunity_cost_usd: round2(opportunity),
+    setup_gas_usd: capital >= 150 ? 8 : 4,
+    weekly_gas_usd: 2,
+    opportunity_cost_usd: round2(capital * TBILL_RATE * (hold / 365)),
     total_cost_usd: round2(totalCost),
     p_launch: Math.round(pLaunch * 10000) / 10000,
+    hazard_per_year: Math.round(hazardPerYear * 1000) / 1000,
     break_even_usd: Math.round(breakEven),
     ev_100: Math.round(ev100),
     ev_500: Math.round(ev500),
     ev_2000: Math.round(ev2000),
+    ev_500_ratio: round2(ev500 / totalCost),
     verdict,
   };
 }
@@ -752,7 +1167,8 @@ export function scoreProtocols(
  * Bootstrap rank ranges (U5): refit the comps curve BOOTSTRAP_REPS times on bootstrap
  * resamples of the clean comps, re-score the board each time, and record each row's rank
  * at p10 and p90. The resample keeps each ticker's (TVL, mcap) pair together; refits use
- * the curve as-is (no guardrail inside a refit — the guardrail belongs to the point fit).
+ * the chosen curve kind (V3) as-is (no guardrail inside a refit — the guardrail belongs
+ * to the point fit).
  */
 export function bootstrapRanks(
   snapshot: Snapshot,
@@ -763,19 +1179,22 @@ export function bootstrapRanks(
   const n = comps.length;
   const xs = comps.map((p) => Math.log(p.tvl_usd));
   const ys = comps.map((p) => Math.log(p.mcap_usd!));
+  const cats = comps.map((p) => p.category);
   const rng = mulberry32(BOOTSTRAP_SEED);
   const ranks: Record<string, number[]> = {};
   for (const p of protocols) ranks[p.slug] = [];
   for (let rep = 0; rep < BOOTSTRAP_REPS; rep++) {
     const sampleX: number[] = [];
     const sampleY: number[] = [];
+    const sampleCats: Array<string | null> = [];
     for (let i = 0; i < n; i++) {
       const j = Math.floor(rng() * n);
-      sampleX.push(xs[j]);
-      sampleY.push(ys[j]);
+      sampleX.push(xs[j]!);
+      sampleY.push(ys[j]!);
+      sampleCats.push(cats[j]!);
     }
-    const f = ols(sampleX, sampleY);
-    const refit: CompsFit = { ...scoring.fit, intercept: f.intercept, slope: f.slope, used_flat: false };
+    const f = fitCurve(sampleX, sampleY, sampleCats, scoring.fit.kind);
+    const refit: CompsFit = { ...scoring.fit, intercept: f.intercept, slope: f.slope, byCategory: f.byCategory, used_flat: false };
     const scored = scoreProtocols(protocols, snapshot, { ...scoring, fit: refit });
     scored.forEach((s, i) => ranks[s.p.slug].push(i + 1));
   }
@@ -860,9 +1279,11 @@ export function buildBoard(snapshot: Snapshot, scoring: Scoring): BoardRow[] {
   const protocols = [...chosen.values()];
   const scored = scoreProtocols(protocols, snapshot, scoring);
   const ranges = bootstrapRanks(snapshot, scoring, protocols);
+  const clock = hazardClock(snapshot);
   return scored.map((s, i) => {
-    const pLaunch = scoring.p_launch[s.p.category ?? ''] ?? scoring.overall_rate;
-    const fe = farmEconomics(s.p, s.age, pLaunch);
+    const factor = scoring.hazardFactors[s.p.category ?? ''] ?? 1.0;
+    const { p_launch, hazard } = forwardLaunchProbability(s.age, factor, clock);
+    const fe = farmEconomics(s.p, s.age, p_launch, hazard);
     return {
       rank: i + 1,
       slug: s.p.slug,
@@ -1037,22 +1458,40 @@ export function radarRow(row: BoardRow): RadarRow {
 }
 
 /** Everything the dashboard renders, from the snapshot — plus the fit and rates the dossier prints. */
-export function buildRadar(snapshot: Snapshot, model: ModelConstants = MODEL): { board: BoardRow[]; radar: RadarData; fit: CompsFit; rates: LaunchRates } {
+export function buildRadar(snapshot: Snapshot, model: ModelConstants = MODEL): { board: BoardRow[]; radar: RadarData; fit: CompsFit; rates: LaunchRates; ablation: Ablation } {
   const fit = fitComps(snapshot);
   const rates = launchRates(snapshot, model);
-  const factors: Record<string, number> = {};
+  const factors0: Record<string, number> = {};
   const pLaunch: Record<string, number> = {};
   for (const [cat, r] of Object.entries(rates.by_category)) {
-    factors[cat] = r.factor;
+    factors0[cat] = r.factor;
     pLaunch[cat] = r.shrunk_rate;
   }
+  // V2: blind-test every term against the comps' market caps, then apply the decisions.
+  const scoring0: Scoring = {
+    model,
+    fit,
+    factors: factors0,
+    p_launch: pLaunch,
+    overall_rate: rates.overall_rate,
+    maturityFlat: rates.maturity_flat,
+    useGrowth: true,
+    useChain: true,
+    hazardFactors: factors0,
+  };
+  const ablation = ablateModel(snapshot, scoring0);
+  const factors: Record<string, number> = { ...factors0 };
+  for (const cat of ablation.decisions.droppedCategories) factors[cat] = 1.0;
   const scoring: Scoring = {
     model,
     fit,
     factors,
     p_launch: pLaunch,
     overall_rate: rates.overall_rate,
-    maturityFlat: rates.maturity_flat,
+    maturityFlat: ablation.decisions.maturityFlat,
+    useGrowth: ablation.decisions.useGrowth,
+    useChain: ablation.decisions.useChain,
+    hazardFactors: factors0,
   };
   const board = buildBoard(snapshot, scoring);
   const live = liveRows(snapshot);
@@ -1072,10 +1511,16 @@ export function buildRadar(snapshot: Snapshot, model: ModelConstants = MODEL): {
     fit,
     category_factors: factors,
     p_launch: pLaunch,
+    terms: {
+      growth: scoring.useGrowth,
+      chain: scoring.useChain,
+      maturity_flat: scoring.maturityFlat,
+      dropped_categories: ablation.decisions.droppedCategories,
+    },
     tbill: { rate: TBILL_RATE, as_of: TBILL_AS_OF },
     factors_note: rates.adopted_note,
   };
-  return { board, radar, fit, rates };
+  return { board, radar, fit, rates, ablation };
 }
 
 /** The snapshot out of a file's text, refused unless it is the shape the model scores. */
