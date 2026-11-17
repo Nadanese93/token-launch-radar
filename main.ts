@@ -11,19 +11,20 @@
 //
 // The snapshot flag accepts a file or a directory (a directory means the
 // snapshot.json inside it). With no flag, the grader's mount point /input
-// is used. The output directory comes from MAKEFUN_OUTPUT_DIR, or "out"
+// is used. The output directory comes from MAKEFUN_OUTPUT_DIR, or "/output"
 // when that variable is unset. Nothing here touches a chain: no wallet,
 // no signing, no broadcast.
 
 import { copyFileSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
 import { basename, join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { buildRadar, boardIssue, dataScript, parseSnapshot } from './lib/model.ts';
 import { buildDossier } from './vendor/makefun-board.ts';
 
 // Where the grader mounts the sealed snapshot when no --input is given.
 const DEFAULT_INPUT = '/input';
 // Output directory when MAKEFUN_OUTPUT_DIR is not set.
-const DEFAULT_OUTPUT = 'out';
+const DEFAULT_OUTPUT = '/output';
 // Caps the bounty sets for the dossier (see vendor/makefun-board.ts).
 const DOSSIER_TEXT_CAP = 65536;
 const SHOT_MAX = 4;
@@ -110,7 +111,7 @@ function shotNames(dir: string): string[] {
 }
 
 function main(): void {
-  const here = process.cwd();
+  const here = fileURLToPath(new URL('.', import.meta.url));
   const input = snapshotFile(inputFlag(process.argv.slice(2)));
 
   let raw: string;
