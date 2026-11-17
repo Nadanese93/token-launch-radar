@@ -285,6 +285,51 @@
     );
   }
 
+  // The second view (R2a): the same rows ranked by implied value among the
+  // consumer categories only. B2B vault businesses (Risk Curators, Onchain
+  // Capital Allocators) are excluded here and flagged Lower below, because a
+  // retail token fits a consumer protocol and rarely fits a B2B fee business.
+  // This view changes no ranking: the main board above is untouched.
+  var B2B_CATEGORIES = { 'Risk Curators': true, 'Onchain Capital Allocator': true };
+  function tgePanel() {
+    var consumer = DATA.rows.filter(function (r) { return !B2B_CATEGORIES[r.category]; }).slice(0, 10);
+    var vaults = DATA.rows.filter(function (r) { return B2B_CATEGORIES[r.category]; }).slice(0, 3);
+    var tbody = el('tbody');
+    consumer.forEach(function (r, i) {
+      var tr = el('tr', {
+        tabindex: '0',
+        onclick: function () { openDetail(r.slug); },
+        onkeydown: function (e) { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openDetail(r.slug); } }
+      },
+        el('td', { class: 'num', text: String(i + 1) }),
+        el('td', null, el('div', { class: 'name' },
+          el('b', { text: r.name }),
+          el('span', { class: 'sub', text: (r.category || 'Other') + ' on ' + (r.chains && r.chains.length ? r.chains.slice(0, 2).join(', ') : 'an unnamed chain') + ' - board rank ' + r.rank })
+        )),
+        el('td', { class: 'num', text: fmtUsd(r.implied_value_usd) }),
+        el('td', null, el('span', { class: 'tag tag-higher', text: 'Higher' }))
+      );
+      tbody.appendChild(tr);
+    });
+    return el('section', { class: 'panel model tge' },
+      el('h2', { text: 'Most likely to launch a token' }),
+      el('p', { class: 'sub', text: 'The main board ranks by implied value, which is size first -- and size is why B2B vault businesses lead it. This view ranks the same rows by implied value among the consumer categories only: the protocols a retail token fits. Risk Curators and Onchain Capital Allocators are excluded here, not hidden -- see below.' }),
+      el('div', { class: 'table-wrap' },
+        el('table', null,
+          el('caption', { class: 'sub', text: 'Top 10 by implied value among non-vault categories. Select a row for its model and farm plan.' }),
+          el('thead', null, el('tr', null,
+            el('th', { scope: 'col', text: 'TGE rank' }),
+            el('th', { scope: 'col', text: 'Protocol' }),
+            el('th', { scope: 'col', text: 'Implied value' }),
+            el('th', { scope: 'col', text: 'Likelihood' })
+          )),
+          tbody
+        )
+      ),
+      el('p', { class: 'sub', text: 'Flagged Lower, not hidden: ' + vaults.map(function (r) { return r.name + ' (' + fmtUsd(r.implied_value_usd) + ')'; }).join(', ') + ' -- B2B vault businesses whose revenue is institutional fees, so a retail token is the least certain for them. Their implied values still lead the main board above.' })
+    );
+  }
+
   function modelPanel() {
     var m = DATA.model;
     return el('section', { class: 'panel model' },
@@ -294,7 +339,7 @@
         'implied = round( tvl_usd x ' + m.base_multiple + ' x (1 + clamp(change_7d, ' + m.growth_floor + ', ' + m.growth_cap + ') / 100 x ' + m.growth_weight + ') x (' + m.maturity_floor + ' + min(age_days, ' + m.maturity_days + ') / ' + m.maturity_days + ' x ' + m.maturity_range + ') x (1 + ' + m.chain_step + ' x min(chains - 1, ' + m.chain_max_extra + ')) x category prior )'
       ),
       el('p', { class: 'sub', text: 'TVL and seven-day growth come from the snapshot. Age is the time since the protocol was first listed, the best record of how long it has run with no token; an unlisted age uses ' + m.unknown_age_days + ' days. The early radar is every strict-tokenless protocol below the watchlist floor (no top-N cap), and the live-token protocols are set aside with their market caps shown.' }),
-      el('p', { class: 'sub', text: 'Category prior: Risk Curators 0.7, Onchain Capital Allocator 0.8, all others 1.0 — curator/vault businesses monetise via institutional fees and have historically rarely issued a retail token. Honest limits: the snapshot has no parentProtocol field, so that check cannot be performed; the snapshot says nothing about funding, team or token plans, so implied value is a size-and-age estimate only. Farm plans are templated from category, chain, TVL and age, not written by hand per protocol. The board is dominated by Risk Curators (33 of 178 rows), many of them B2B vaults that may never launch a token.' })
+      el('p', { class: 'sub', text: 'Category prior: Risk Curators 0.7, Onchain Capital Allocator 0.8, all others 1.0 -- curator/vault businesses monetise via institutional fees and have historically rarely issued a retail token. Honest limits: the snapshot has no parentProtocol field, so that check cannot be performed; the snapshot says nothing about funding, team or token plans, so implied value is a size-and-age estimate only. Farm plans are templated from category, chain, TVL and age, not written by hand per protocol. The board is dominated by Risk Curators (33 of 178 rows), many of them B2B vaults that may never launch a token.' })
     );
   }
 
@@ -353,6 +398,7 @@
     shell.appendChild(lede());
     shell.appendChild(controls());
     shell.appendChild(state.tab === 'pre-token' ? boardTable() : liveTable());
+    if (state.tab === 'pre-token') shell.appendChild(tgePanel());
     if (state.tab === 'pre-token') shell.appendChild(modelPanel());
     app.appendChild(shell);
     app.setAttribute('aria-busy', 'false');

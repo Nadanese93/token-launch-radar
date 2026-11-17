@@ -1,4 +1,4 @@
-/* Token Launch Radar — dashboard stylesheet.
+/* Token Launch Radar -- dashboard stylesheet.
  *
  * A pale green-grey page, white panels, dark green-black ink. Numbers are
  * set in a monospace stack so TVL, growth and implied value line up down
@@ -389,6 +389,17 @@ tbody tr {
   font-size: 14px;
   color: var(--muted);
   text-align: center;
+}
+
+/* --- TGE-likelihood view (R2a): a second ranking, same data ------------ */
+
+.tag {
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.tag-higher {
+  color: var(--accent);
 }
 
 /* --- model note under the board -------------------------------------- */
