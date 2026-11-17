@@ -1,9 +1,6 @@
-/* Token Launch Radar -- dashboard stylesheet.
- *
- * A pale green-grey page, white panels, dark green-black ink. Numbers are
- * set in a monospace stack so TVL, growth and implied value line up down
- * the board. Nothing here fetches anything: the page is static.
- */
+/* Token Launch Radar -- dashboard stylesheet. Pale green-grey page, white panels, dark
+ * green-black ink. Numbers are monospace so TVL, growth and implied value line up down the
+ * board. Nothing here fetches anything: the page is static. */
 
 :root {
   --bg: #f2f5f3;
@@ -565,13 +562,50 @@ dialog.detail::backdrop {
   margin-bottom: 6px;
 }
 
-thead th:nth-child(1) { width: 82px; }
-thead th:nth-child(2) { width: 443px; }
-thead th:nth-child(3) { width: 107px; }
-thead th:nth-child(4) { width: 129px; }
-thead th:nth-child(5) { width: 108px; }
-thead th:nth-child(6) { width: 274px; }
-thead th:nth-child(7) { width: 111px; }
+/* --- verdict badges (radar-3) and bootstrap rank ranges --------------- */
+
+.rank-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.rank-cell .range {
+  font-size: 11px;
+}
+
+.verdict {
+  display: inline-block;
+  padding: 2px 10px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.verdict-farm {
+  background: #e3f2ec;
+  color: var(--accent);
+}
+
+.verdict-thin {
+  background: #fdf3d7;
+  color: #8a6d1a;
+}
+
+.verdict-skip {
+  background: #fbe9e7;
+  color: var(--neg);
+}
+
+thead th:nth-child(1) { width: 70px; }
+thead th:nth-child(2) { width: 380px; }
+thead th:nth-child(3) { width: 100px; }
+thead th:nth-child(4) { width: 90px; }
+thead th:nth-child(5) { width: 90px; }
+thead th:nth-child(6) { width: 240px; }
+thead th:nth-child(7) { width: 90px; }
+thead th:nth-child(8) { width: 110px; }
 
 .tabs button {
   padding: 0 13px;

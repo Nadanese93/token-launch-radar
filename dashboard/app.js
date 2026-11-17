@@ -26,18 +26,17 @@
     if (days >= 365) return (days / 365).toFixed(1) + 'y';
     return Math.max(0, Math.round(days)) + 'd';
   }
-  // The model in one function: the page recomputes a row from the snapshot figures and checks the
-  // number board.json carries, so the page's code and the board's data are visibly the same arithmetic.
-  // radar-2: adds the chain multiplier and the category prior (see lib/model.ts).
+  // The model in one function: the page recomputes a row and checks the number board.json
+  // carries. radar-3: the fitted multiple (row.base_multiple, unrounded so the recompute is
+  // exact), flat maturity (1.0), and the adopted category factor from DATA.category_factors.
   function impliedOf(row, model) {
     var growth = Math.min(model.growth_cap, Math.max(model.growth_floor, row.change_7d === null || row.change_7d === undefined ? 0 : row.change_7d));
     var growthMult = 1 + (growth / 100) * model.growth_weight;
-    var age = row.age_days === null || row.age_days === undefined ? model.unknown_age_days : row.age_days;
-    var maturity = model.maturity_floor + (Math.min(Math.max(age, 0), model.maturity_days) / model.maturity_days) * model.maturity_range;
+    var maturity = 1.0;
     var chains = row.chains && row.chains.length ? row.chains.length : 1;
     var chainMult = 1 + model.chain_step * Math.min(Math.max(chains - 1, 0), model.chain_max_extra);
-    var prior = row.category === 'Risk Curators' ? model.category_prior_risk_curators : row.category === 'Onchain Capital Allocator' ? model.category_prior_onchain_capital_allocator : 1.0;
-    return Math.max(1, Math.round(row.tvl_usd * model.base_multiple * growthMult * maturity * chainMult * prior));
+    var factor = (DATA.category_factors && DATA.category_factors[row.category] !== undefined) ? DATA.category_factors[row.category] : 1.0;
+    return Math.max(1, Math.round(row.tvl_usd * row.base_multiple * growthMult * maturity * chainMult * factor));
   }
 
   function el(tag, attrs) {
@@ -146,6 +145,7 @@
       else if (key === 'tvl') { av = a.tvl_usd; bv = b.tvl_usd; }
       else if (key === 'growth') { av = a.change_7d === null ? -Infinity : a.change_7d; bv = b.change_7d === null ? -Infinity : b.change_7d; }
       else if (key === 'age') { av = a.age_days === null ? Infinity : a.age_days; bv = b.age_days === null ? Infinity : b.age_days; }
+      else if (key === 'verdict') { var order = { FARM: 0, THIN: 1, SKIP: 2 }; av = order[a.verdict] === undefined ? 3 : order[a.verdict]; bv = order[b.verdict] === undefined ? 3 : order[b.verdict]; }
       else { av = a.implied_value_usd; bv = b.implied_value_usd; }
       if (av < bv) return -state.dir;
       if (av > bv) return state.dir;
@@ -167,13 +167,13 @@
   function lede() {
     return el('section', { class: 'lede' },
       el('div', null,
-        el('h1', { text: DATA.watchlist_size + ' watchlist protocols, ranked by implied value' }),
-        el('p', { text: 'The watchlist is the floor: every protocol with at least $' + Math.round(DATA.floor_usd / 1e6) + 'M of TVL and no token on record. The early radar adds ' + DATA.early_size + ' pre-token protocols below that floor. Implied value is a model, not a promise.' })
+        el('h1', { text: DATA.board_size + ' pre-token protocols, ranked by implied value' }),
+        el('p', { text: 'Every strict-tokenless protocol in the snapshot: the ' + DATA.watchlist_size + ' on the watchlist plus ' + DATA.early_size + ' outside it, including 20 above the watchlist floor. Implied value is a model, not a promise — each rank carries a bootstrap range and a costed farm verdict.' })
       ),
       el('div', { class: 'facts' },
         el('div', { class: 'fact' }, el('span', { text: 'Watchlist covered' }), el('b', { text: DATA.watchlist_size + ' / ' + DATA.watchlist_size })),
         el('div', { class: 'fact' }, el('span', { text: 'Pre-token rows scored' }), el('b', { text: String(DATA.board_size) })),
-        el('div', { class: 'fact' }, el('span', { text: 'Early rows below the floor' }), el('b', { text: String(DATA.early_size) })),
+        el('div', { class: 'fact' }, el('span', { text: 'Rows outside the watchlist' }), el('b', { text: String(DATA.early_size) })),
         el('div', { class: 'fact' }, el('span', { text: 'Live-token protocols set aside' }), el('b', { text: String(DATA.live_size) }))
       )
     );
@@ -227,7 +227,10 @@
         onclick: function () { openDetail(r.slug); },
         onkeydown: function (e) { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openDetail(r.slug); } }
       },
-        el('td', { class: 'num', text: String(r.rank) }),
+        el('td', null, el('div', { class: 'rank-cell' },
+          el('span', { class: 'num', text: String(r.rank) }),
+          el('span', { class: 'sub range', text: r.rank_range ? r.rank_range[0] + '-' + r.rank_range[1] : '' })
+        )),
         el('td', null, el('div', { class: 'name' },
           el('b', { text: r.name }),
           el('span', { class: 'sub', text: (r.category || 'Other') + ' on ' + (r.chains && r.chains.length ? r.chains.slice(0, 2).join(', ') : 'an unnamed chain') })
@@ -239,7 +242,8 @@
           el('div', { class: 'bar', 'aria-hidden': 'true' }, el('i', { style: 'width:' + Math.max(3, Math.round((r.implied_value_usd / max) * 100)) + '%' })),
           el('span', { class: 'num', text: fmtUsd(r.implied_value_usd) })
         )),
-        el('td', null, el('span', { class: 'status', text: 'no token' }))
+        el('td', null, el('span', { class: 'status', text: 'no token' })),
+        el('td', null, el('span', { class: 'verdict verdict-' + (r.verdict || 'skip').toLowerCase(), text: r.verdict || 'n/a' }))
       );
       tbody.appendChild(tr);
     });
@@ -254,7 +258,8 @@
             sortHeader('growth', '7d'),
             sortHeader('age', 'Age'),
             sortHeader('implied', 'Implied value'),
-            el('th', { scope: 'col', text: 'Token' })
+            el('th', { scope: 'col', text: 'Token' }),
+            sortHeader('verdict', 'Verdict')
           )),
           tbody
         )
@@ -285,11 +290,8 @@
     );
   }
 
-  // The second view (R2a): the same rows ranked by implied value among the
-  // consumer categories only. B2B vault businesses (Risk Curators, Onchain
-  // Capital Allocators) are excluded here and flagged Lower below, because a
-  // retail token fits a consumer protocol and rarely fits a B2B fee business.
-  // This view changes no ranking: the main board above is untouched.
+  // The second view (R2a): the same rows ranked by implied value among the consumer categories
+  // only. B2B vault businesses are excluded here and flagged Lower below. This view changes no ranking.
   var B2B_CATEGORIES = { 'Risk Curators': true, 'Onchain Capital Allocator': true };
   function tgePanel() {
     var consumer = DATA.rows.filter(function (r) { return !B2B_CATEGORIES[r.category]; }).slice(0, 10);
@@ -313,7 +315,7 @@
     });
     return el('section', { class: 'panel model tge' },
       el('h2', { text: 'Most likely to launch a token' }),
-      el('p', { class: 'sub', text: 'The main board ranks by implied value, which is size first -- and size is why B2B vault businesses lead it. This view ranks the same rows by implied value among the consumer categories only: the protocols a retail token fits. Risk Curators and Onchain Capital Allocators are excluded here, not hidden -- see below.' }),
+      el('p', { class: 'sub', text: 'The main board ranks by implied value, which is size first -- and size is why B2B vault businesses lead it: Steakhouse Financial and Sentora Curator, the two largest vaults, hold ranks 1 and 2. This view ranks the same rows by implied value among the consumer categories only: the protocols a retail token fits. It is led by USDD, a CDP stablecoin, at board rank 3. Risk Curators and Onchain Capital Allocators are excluded here, not hidden -- see below.' }),
       el('div', { class: 'table-wrap' },
         el('table', null,
           el('caption', { class: 'sub', text: 'Top 10 by implied value among non-vault categories. Select a row for its model and farm plan.' }),
@@ -332,14 +334,19 @@
 
   function modelPanel() {
     var m = DATA.model;
+    var fit = DATA.fit || {};
+    var farmCount = DATA.rows.filter(function (r) { return r.verdict === 'FARM'; }).length;
+    var minP = Math.min.apply(null, DATA.rows.map(function (r) { return r.farm_economics ? r.farm_economics.p_launch : 1; }));
     return el('section', { class: 'panel model' },
       el('h2', { text: 'How implied value is computed' }),
       el('p', { class: 'sub', text: 'Every row is scored by one function of the snapshot figures. No protocol name is special-cased, and no row is hand-picked.' }),
       el('div', { class: 'formula' },
-        'implied = round( tvl_usd x ' + m.base_multiple + ' x (1 + clamp(change_7d, ' + m.growth_floor + ', ' + m.growth_cap + ') / 100 x ' + m.growth_weight + ') x (' + m.maturity_floor + ' + min(age_days, ' + m.maturity_days + ') / ' + m.maturity_days + ' x ' + m.maturity_range + ') x (1 + ' + m.chain_step + ' x min(chains - 1, ' + m.chain_max_extra + ')) x category prior )'
+        'implied = round( tvl_usd x fitted_multiple(tvl_usd) x (1 + clamp(change_7d, ' + m.growth_floor + ', ' + m.growth_cap + ') / 100 x ' + m.growth_weight + ') x 1.0 x (1 + ' + m.chain_step + ' x min(chains - 1, ' + m.chain_max_extra + ')) x category factor )'
       ),
-      el('p', { class: 'sub', text: 'TVL and seven-day growth come from the snapshot. Age is the time since the protocol was first listed, the best record of how long it has run with no token; an unlisted age uses ' + m.unknown_age_days + ' days. The early radar is every strict-tokenless protocol below the watchlist floor (no top-N cap), and the live-token protocols are set aside with their market caps shown.' }),
-      el('p', { class: 'sub', text: 'Category prior: Risk Curators 0.7, Onchain Capital Allocator 0.8, all others 1.0 -- curator/vault businesses monetise via institutional fees and have historically rarely issued a retail token. Honest limits: the snapshot has no parentProtocol field, so that check cannot be performed; the snapshot says nothing about funding, team or token plans, so implied value is a size-and-age estimate only. Farm plans are templated from category, chain, TVL and age, not written by hand per protocol. The board is dominated by Risk Curators (33 of 178 rows), many of them B2B vaults that may never launch a token.' })
+      el('p', { class: 'sub', text: 'The multiple is fitted, not assumed: log(mcap) = ' + (fit.intercept !== undefined ? fit.intercept.toFixed(3) : 'n/a') + ' + ' + (fit.slope !== undefined ? fit.slope.toFixed(3) : 'n/a') + ' x log(TVL) over ' + (fit.n !== undefined ? fit.n : 'n/a') + ' clean comps (R-squared ' + (fit.r2 !== undefined ? fit.r2.toFixed(3) : 'n/a') + '), so the multiple falls from ~0.79 at $5M TVL to ~0.03 at $1B. It beat the flat 0.25 multiple out of sample (5-fold CV log-RMSE ' + (fit.cv_fit !== undefined ? fit.cv_fit.toFixed(3) : 'n/a') + ' vs ' + (fit.cv_flat !== undefined ? fit.cv_flat.toFixed(3) : 'n/a') + '; leave-one-out ' + (fit.loo_fit !== undefined ? fit.loo_fit.toFixed(3) : 'n/a') + ' vs ' + (fit.loo_flat !== undefined ? fit.loo_flat.toFixed(3) : 'n/a') + ') -- had it lost, the build would have used the flat multiple instead. See dashboard/validation.md for the full check.' }),
+      el('p', { class: 'sub', text: 'Maturity is flat (1.0): the snapshot\'s launch hazard falls with age instead of rising, so age earns no bonus. Category factors are shrunk empirical launch rates (cohort aged at least a year): Dexs 1.27, Lending 1.28, RWA 1.02, Yield 1.02, Basis Trading 1.08, CDP 1.00, Onchain Capital Allocator 0.77, Risk Curators 0.7 (kept at the old prior -- its shrunk factor is unstable across splits).' }),
+      el('p', { class: 'sub', text: 'Each row also carries a costed farm verdict: setup gas plus $2/week plus the T-bill opportunity cost on the capital (4.5%/yr), a break-even allocation, and expected value at $100/$500/$2,000. ' + farmCount + ' of ' + DATA.board_size + ' rows read FARM under the stated rule, because the lowest planning launch rate is ' + minP.toFixed(2) + ' and costs are $13-22 -- the verdict does not discriminate here, so read the break-even and EV figures instead. Ranks carry bootstrap ranges (200 refits): rank 1 Steakhouse Financial spans 1-2, rank 2 Sentora Curator 2-3.' }),
+      el('p', { class: 'sub', text: 'Honest limits: the snapshot has no parentProtocol field, so that check cannot be performed; the snapshot says nothing about funding, team or token plans, so implied value is a size-and-age estimate only. Farm plans are templated from category, chain, TVL and age, not written by hand per protocol. The board is dominated by Risk Curators (34 of 198 rows), many of them B2B vaults that may never launch a token.' })
     );
   }
 
@@ -355,7 +362,7 @@
     var steps = farmSteps(row);
     dialog.appendChild(el('div', { class: 'detail-head' },
       el('div', null,
-        el('span', { class: 'brand-name', text: 'Rank ' + row.rank + ' of ' + DATA.board_size }),
+        el('span', { class: 'brand-name', text: 'Rank ' + row.rank + ' of ' + DATA.board_size + (row.rank_range ? ' (bootstrap ' + row.rank_range[0] + '-' + row.rank_range[1] + ')' : '') }),
         el('h2', { id: 'detail-title', text: row.name }),
         el('p', { class: 'sub', text: (row.category || 'Other') + ' on ' + (row.chains && row.chains.length ? row.chains.join(', ') : 'an unnamed chain') })
       ),
@@ -365,16 +372,36 @@
       el('h3', { text: 'Implied value' }),
       el('div', { class: 'equation' },
         el('div', null, el('span', { text: 'TVL' }), el('b', { class: 'num', text: fmtUsd(row.tvl_usd) })),
+        el('div', null, el('span', { text: 'Fitted multiple' }), el('b', { class: 'num', text: row.base_multiple !== undefined ? row.base_multiple.toFixed(4) : 'n/a' })),
         el('div', null, el('span', { text: 'Seven-day growth' }), el('b', { class: 'num', text: fmtPct(row.change_7d) })),
         el('div', null, el('span', { text: 'Age with no token' }), el('b', { class: 'num', text: fmtAge(row.age_days) })),
         el('div', null, el('span', { text: 'Growth multiplier' }), el('b', { class: 'num', text: String(row.growth_multiplier) })),
-        el('div', null, el('span', { text: 'Maturity multiplier' }), el('b', { class: 'num', text: String(row.maturity_multiplier) })),
+        el('div', null, el('span', { text: 'Maturity multiplier (flat)' }), el('b', { class: 'num', text: String(row.maturity_multiplier) })),
         el('div', null, el('span', { text: 'Chain multiplier' }), el('b', { class: 'num', text: String(row.chain_multiplier) })),
-        el('div', null, el('span', { text: 'Category prior' }), el('b', { class: 'num', text: String(row.category_prior) })),
+        el('div', null, el('span', { text: 'Category factor' }), el('b', { class: 'num', text: String(row.category_prior) })),
+        el('div', null, el('span', { text: 'Rank range (bootstrap p10-p90)' }), el('b', { class: 'num', text: row.rank_range ? row.rank_range[0] + '-' + row.rank_range[1] : 'n/a' })),
         el('div', null, el('span', { text: 'Implied value' }), el('b', { class: 'num', text: fmtUsd(row.implied_value_usd) }))
       ),
       el('p', { class: 'sub', text: 'Model ' + DATA.model_version + ': the same function scores every protocol. The page recomputes this row as ' + fmtUsd(impliedOf(row, DATA.model)) + (impliedOf(row, DATA.model) === row.implied_value_usd ? ', the same number board.json carries.' : ', which differs from the board: the data would be stale.') + ' This is an estimate, not a price.' })
     ));
+    var fe = row.farm_economics;
+    if (fe) {
+      dialog.appendChild(el('section', { class: 'detail-section' },
+        el('h3', { text: 'Farm economics — verdict ' + (row.verdict || 'n/a') }),
+        el('div', { class: 'equation' },
+          el('div', null, el('span', { text: 'Capital' }), el('b', { class: 'num', text: fmtUsd(fe.capital_usd) })),
+          el('div', null, el('span', { text: 'Hold' }), el('b', { class: 'num', text: fe.hold_days + ' days' })),
+          el('div', null, el('span', { text: 'Setup gas' }), el('b', { class: 'num', text: fmtUsd(fe.setup_gas_usd) })),
+          el('div', null, el('span', { text: 'Weekly gas' }), el('b', { class: 'num', text: fmtUsd(fe.weekly_gas_usd) })),
+          el('div', null, el('span', { text: 'Opportunity cost (T-bill 4.5%/yr)' }), el('b', { class: 'num', text: fmtUsd(fe.opportunity_cost_usd) })),
+          el('div', null, el('span', { text: 'Total cost' }), el('b', { class: 'num', text: fmtUsd(fe.total_cost_usd) })),
+          el('div', null, el('span', { text: 'Planning launch rate' }), el('b', { class: 'num', text: (fe.p_launch * 100).toFixed(1) + '%' })),
+          el('div', null, el('span', { text: 'Break-even allocation' }), el('b', { class: 'num', text: fmtUsd(fe.break_even_usd) })),
+          el('div', null, el('span', { text: 'EV at $100 / $500 / $2,000' }), el('b', { class: 'num', text: fmtUsd(fe.ev_100) + ' / ' + fmtUsd(fe.ev_500) + ' / ' + fmtUsd(fe.ev_2000) }))
+        ),
+        el('p', { class: 'sub', text: 'The launch rate is the category\'s backward-looking base rate, not a forecast. The $100/$500/$2,000 scenarios are labelled, not predictions.' })
+      ));
+    }
     dialog.appendChild(el('section', { class: 'detail-section' },
       el('h3', { text: 'Farm plan' }),
       el('ol', { class: 'steps' }, steps.map(function (s) {

@@ -19,6 +19,7 @@ import { copyFileSync, mkdirSync, readFileSync, readdirSync, statSync, writeFile
 import { basename, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { buildRadar, boardIssue, dataScript, parseSnapshot } from './lib/model.ts';
+import { validationMarkdown } from './lib/validate.ts';
 import { buildDossier } from './vendor/makefun-board.ts';
 
 // Where the grader mounts the sealed snapshot when no --input is given.
@@ -128,7 +129,7 @@ function main(): void {
     die(`invalid snapshot ${input}: ${err instanceof Error ? err.message : String(err)}`);
   }
 
-  const { board, radar } = buildRadar(snap);
+  const { board, radar, fit, rates } = buildRadar(snap);
   const problem = boardIssue(board, snap);
   if (problem !== null && problem !== undefined) {
     die(`board failed its checks: ${problem}`);
@@ -157,6 +158,11 @@ function main(): void {
   copyTree(join(here, 'dashboard'), dashOut);
   copyTree(join(here, 'screenshots'), shotsOut);
 
+  // The validation page, generated at build from the fit, the rates and the board, so the
+  // dossier carries the numbers behind the model (it is written after the copy so it lands
+  // in the output dashboard before buildDossier reads it).
+  writeFileSync(join(dashOut, 'validation.md'), validationMarkdown(fit, rates, board, snap), 'utf8');
+
   // The dossier is built from what now sits in the output directory, so
   // the scorer can rebuild the identical bytes from the same files.
   let dossier: Uint8Array;
@@ -181,6 +187,12 @@ function main(): void {
       `${basename(boardPath)}, ${basename(dataPath)}, ${basename(dossierPath)} in ${outDir} ` +
       `(+ dashboard/ and ${shots.length} screenshots)`,
   );
+  console.log(
+    `fit: log(mcap) = ${fit.intercept.toFixed(3)} + ${fit.slope.toFixed(3)}*log(TVL), R2=${fit.r2.toFixed(3)}, n=${fit.n}, ` +
+      `CV ${fit.cv_fit.toFixed(3)} vs flat ${fit.cv_flat.toFixed(3)}, LOO ${fit.loo_fit.toFixed(3)} vs flat ${fit.loo_flat.toFixed(3)}, ` +
+      `split ${Number.isFinite(fit.split_fit) ? fit.split_fit.toFixed(3) : 'n/a'} vs flat ${Number.isFinite(fit.split_flat) ? fit.split_flat.toFixed(3) : 'n/a'}, used_flat=${fit.used_flat}`,
+  );
+  console.log(`rates: cohort ${rates.cohort_n}, overall ${(rates.overall_rate * 100).toFixed(1)}%, hazard ${rates.hazard_per_year.toFixed(3)}/yr; ${rates.adopted_note}`);
 }
 
 main();
