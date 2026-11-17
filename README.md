@@ -1,6 +1,10 @@
+[![make.fun · token-radar-01](https://make.fun/badge/token-radar-01.svg)](https://make.fun/bounty/token-radar-01?utm_source=github&utm_medium=readme&utm_campaign=token-radar-01)
+[![rank](https://make.fun/badge/token-radar-01/Nadanese93/token-launch-radar/rank.svg)](https://make.fun/bounty/token-radar-01/leaderboard?utm_source=github&utm_medium=readme&utm_campaign=token-radar-01)
+[![reward](https://make.fun/badge/token-radar-01/Nadanese93/token-launch-radar/reward.svg)](https://make.fun/bounty/token-radar-01?utm_source=github&utm_medium=readme&utm_campaign=token-radar-01)
+
 # Token Launch Radar — Make.fun entry (scaffold)
 
-Entry untuk bounty **"Build the best token launch radar"** — https://make.fun/bounty/token-radar-01
+Entry untuk bounty **"Build the best token launch radar"** — [https://make.fun/bounty/token-radar-01](https://make.fun/bounty/token-radar-01)
 Hadiah $1,325 USDC (top 10 dibayar), deadline **Senin 14 Des 2026 17:00 WIB (10:00 UTC)**.
 
 ## Ringkasnya
@@ -33,7 +37,9 @@ yang harus dilakukan**.
 - Payout pribadi Rangga (Bitget Wallet): `HeFcYUv7mcm2gyxkbTtGs99eq51Qi4kisifktMR5UUHU`
   (alamat publik saja; payout dari agent dialihkan ke sini atas instruksi)
 
-## Status: entry jadi, teruji lokal, belum submit (16 Nov 2026)
+## Status: entry jadi, teruji lokal, check lokal lolos penuh (17 Nov 2026)
+
+Submit pertama (17 Nov) ditolak server hanya karena README/About belum menampilkan badge make.fun — diperbaiki di commit ini. Check lokal: 0 gagal, thinking_reproduces 45,4% (794/1747 baris).
 
 Build selesai dan lolos semua gate lokal (`MAKEFUN_OUTPUT_DIR=out node main.ts --input kit/input/snapshot.json`, exit 0):
 - `board.json` — **178 baris** (40/40 watchlist + 138 early ketat), rank 1–178, implied value menurun monoton, farm plan 6 langkah per baris (124–175 karakter)
@@ -43,7 +49,7 @@ Build selesai dan lolos semua gate lokal (`MAKEFUN_OUTPUT_DIR=out node main.ts -
 
 Model `radar-2`: implied = TVL × 0,25 × growth × maturity × chain × prior kategori (Risk Curators 0,7; Onchain Capital Allocator 0,8; lainnya 1,0). Keterbatasan jujur: snapshot tidak punya field `parentProtocol`, jadi cek itu tidak bisa dilakukan; snapshot tidak berisi pendanaan/tim/rencana token; farm plan adalah template dari kategori/chain/TVL/umur, bukan tulisan tangan per protokol; board didominasi Risk Curators (33/178 baris) yang mungkin tidak pernah TGE.
 
-Belum dilakukan: push ke GitHub dan submit ke Make.fun — keduanya menunggu langkah submit (repo `token-launch-radar`, owner Nadanese93).
+Sudah di-push ke GitHub; submit pertama 17 Nov ditolak server hanya karena README/About (badge diperbaiki di commit ini, About repo masih perlu diatur di GitHub).
 
 ## Aturan transkrip (penting)
 
